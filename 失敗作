@@ -1,0 +1,134 @@
+#include <iostream>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+#include <map>
+#include <chrono>
+#include <ctime>
+#include <sstream>
+#include <iomanip>
+#include <iterator>
+
+using namespace std;
+namespace fs = filesystem;
+
+bool is_within_date_range(fs::file_time_type time,
+    const fs::file_time_type& from,
+    const fs::file_time_type& to) {
+    return time >= from && time <= to;
+}
+
+fs::file_time_type parse_date(const string& date_str) {
+    if (date_str.empty()) return fs::file_time_type::min();
+
+    tm t = {};
+    istringstream ss(date_str);
+    ss >> get_time(&t, "%Y-%m-%d");
+    if (ss.fail()) {
+        cerr << "日付の形式が不正です: " << date_str << endl;
+        return fs::file_time_type::min();
+    }
+    auto tp = chrono::system_clock::from_time_t(mktime(&t));
+
+    return fs::file_time_type::clock::now() + (tp - chrono::system_clock::now());
+}
+
+void save_search_history(const vector<string>& keywords,
+    const string& from_date,
+    const string& to_date) {
+    ofstream ofs("search_history.txt", ios::app);
+    if (!ofs) return;
+
+    auto now = chrono::system_clock::to_time_t(chrono::system_clock::now());
+    ofs << put_time(localtime(&now), "%Y-%m-%d %H:%M:%S") << " | ";
+
+    ofs << "Keywords: ";
+    for (const auto& kw : keywords) ofs << kw << " ";
+    ofs << "| Updated from: " << (from_date.empty() ? "none" : from_date)
+        << " to " << (to_date.empty() ? "none" : to_date) << "\n";
+}
+
+bool contains_all_keywords(const fs::path& filepath, const vector<string>& keywords) {
+    ifstream file(filepath);
+    if (!file) return false;
+
+    string line;
+    while (getline(file, line)) {
+        bool all_found = true;
+        for (const auto& kw : keywords) {
+            if (line.find(kw) == string::npos) {
+                all_found = false;
+                break;
+            }
+        }
+        if (all_found) return true;
+    }
+    return false;
+}
+
+void search_files(const string& directory,
+    const vector<string>& keywords,
+    const fs::file_time_type& from_time,
+    const fs::file_time_type& to_time) {
+
+    map<string, vector<string>> categorized_results;
+
+    for (const auto& entry : fs::recursive_directory_iterator(directory)) {
+        if (!entry.is_regular_file()) continue;
+
+        try {
+            fs::file_time_type ftime = fs::last_write_time(entry);
+            if (!is_within_date_range(ftime, from_time, to_time)) continue;
+
+            if (contains_all_keywords(entry.path(), keywords)) {
+                string ext = entry.path().extension().string();
+                if (ext.empty()) ext = "(no extension)";
+                categorized_results[ext].push_back(entry.path().string());
+            }
+        }
+        catch (const std::exception& e) {
+            cerr << "Error accessing " << entry.path() << ": " << e.what() << endl;
+        }
+    }
+
+    for (const auto& [ext, files] : categorized_results) {
+        cout << "--- " << ext << " ---" << endl;
+        for (const auto& file : files) {
+            cout << file << endl;
+        }
+        cout << endl;
+    }
+}
+
+int main() {
+    cout << "ファイル検索を行うフォルダ名を入力してください: ";
+    string directory;
+    getline(cin, directory);
+
+    cout << "検索キーワード（スペース区切りで詳細検索）: ";
+    string input_line;
+    getline(cin, input_line);
+
+    istringstream iss(input_line);
+    vector<string> keywords{ istream_iterator<string>{iss}, {} };
+
+    cout << "更新日開始（YYYY-MM-DD　未指定は空欄）: ";
+    string from_date;
+    getline(cin, from_date);
+
+    cout << "更新日終了（YYYY-MM-DD　未指定は空欄）: ";
+    string to_date;
+    getline(cin, to_date);
+
+    fs::file_time_type from_time = parse_date(from_date);
+    fs::file_time_type to_time = to_date.empty() ? fs::file_time_type::max() : parse_date(to_date);
+
+    search_files(directory, keywords, from_time, to_time);
+
+    save_search_history(keywords, from_date, to_date);
+
+    cout << "\n検索を終了します。\n";
+
+    return 0;
+}
